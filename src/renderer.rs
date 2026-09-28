@@ -4,7 +4,6 @@ use crate::scene::{Material, GpuMaterial};
 use crate::{fps_counter::FpsCounter, scene::Scene};
 use crate::gui_app::GuiApp;
 use crate::gpu_buffer::StorageBuffer;
-use crate::sphere::Sphere;
 use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
 use egui_winit_platform::{Platform, PlatformDescriptor};
 
@@ -420,7 +419,7 @@ impl Renderer {
             render_pass.draw(0..6, 0..1);
         }
         // egui render pass
-        
+
         self.platform.begin_frame();
         self.gui_app.ui(&self.platform.context(), self.fps_counter.average_fps(), self.fps_counter.average_frame_time());
 
@@ -554,7 +553,7 @@ impl Renderer {
             bind_group_layouts: &[&screen_bind_group_layout],
             push_constant_ranges: &[],
         });
-        
+
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Screen Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("screen_shader.wgsl").into()),

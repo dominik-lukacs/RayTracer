@@ -29,22 +29,12 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let spheres = vec![
-        sphere::Sphere::new(glm::vec3(0.0, 0.0, -1.0), 0.5, 1),
-        sphere::Sphere::new(glm::vec3(-1.0, 0.0, -2.0), 1.0, 1),
-        sphere::Sphere::new(glm::vec3(3.0, 2.0, -4.0), 1.0, 1),
-        sphere::Sphere::new(glm::vec3(-0.2, 0.0, -0.3), 0.3, 1),
-        //sphere::Sphere::new(glm::vec3(0.0, 0.0, 8.0), 1.0, 1),
-        //sphere::Sphere::new(glm::vec3(0.0, 0.0, 10.0), 1.0, 1),
-        //sphere::Sphere::new(glm::vec3(0.0, 0.0, 12.0), 1.0, 1),
-        //sphere::Sphere::new(glm::vec3(0.0, 0.0, 12.0), 1.0, 1),
-    ];
     let scene = setup_scene();
 
     let mut renderer = pollster::block_on(Renderer::new(window, scene));
 
     let start_time = std::time::Instant::now();
-    let mut last_time = std::time::Instant::now();
+    let mut last_time = start_time.clone();
 
     event_loop.run(move |event, _, control_flow| {
         renderer.platform.handle_event(&event);
@@ -55,7 +45,7 @@ fn main() {
                 window_id
             } if window_id == renderer.window.id() => {
                 match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::CloseRequested => *control_flow = ControlFlow::ExitWithCode(0),
                     WindowEvent::Resized(physical_size) => {
                         renderer.resize(*physical_size);
                     }

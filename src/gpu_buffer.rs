@@ -5,6 +5,7 @@ pub struct UniformBuffer {
     binding_idx: u32,
 }
 
+#[allow(unused)]
 impl UniformBuffer {
     pub fn new(
         device: &wgpu::Device,
@@ -73,6 +74,7 @@ pub struct StorageBuffer {
     binding_idx: u32,
 }
 
+#[allow(unused)]
 impl StorageBuffer {
     pub fn new_from_bytes(
         device: &wgpu::Device,
