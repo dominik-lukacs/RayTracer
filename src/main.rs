@@ -128,16 +128,16 @@ fn setup_scene() -> scene::Scene {
         Sphere::new(glm::vec3(0.0, -510.0, -1.0), 500.0, 10_u32),
         // left row
         Sphere::new(glm::vec3(-2.0, 0.0, -3.0), 1.0, 2_u32),
-        //Sphere::new(glm::vec3(0.0, 0.0, -3.0), 1.0, 1_u32),
+        Sphere::new(glm::vec3(0.0, 0.0, -3.0), 1.0, 1_u32),
         Sphere::new(glm::vec3(2.0, 0.0, -3.0), 1.0, 3_u32),
         // middle row
-        //Sphere::new(glm::vec3(-5.0, 1.0, 0.0), 1.0, 2_u32),
-        //Sphere::new(glm::vec3(0.0, 1.0, 0.0), 1.0, 3_u32),
-        //Sphere::new(glm::vec3(5.0, 1.0, 0.0), 1.0, 6_u32),
+        Sphere::new(glm::vec3(-5.0, 1.0, 0.0), 1.0, 2_u32),
+        Sphere::new(glm::vec3(0.0, 1.0, 1.0), 1.0, 3_u32),
+        Sphere::new(glm::vec3(5.0, 1.0, 0.0), 1.0, 6_u32),
         // right row
-        //Sphere::new(glm::vec3(-5.0, 0.8, 4.0), 0.8, 1_u32),
-        //Sphere::new(glm::vec3(0.0, 1.2, 4.0), 1.2, 4_u32),
-        //Sphere::new(glm::vec3(5.0, 2.0, 4.0), 2.0, 5_u32),
+        Sphere::new(glm::vec3(-5.0, 0.8, 4.0), 0.8, 1_u32),
+        Sphere::new(glm::vec3(0.0, 1.2, 4.0), 1.2, 4_u32),
+        Sphere::new(glm::vec3(5.0, 2.0, 4.0), 2.0, 5_u32),
     ];
 
     Scene { spheres, materials }
