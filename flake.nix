@@ -29,6 +29,8 @@
                 cargo
                 rustc
                 rust-analyzer
+                clippy
+                bacon
               ];
 
               buildInputs = with pkgs; [
