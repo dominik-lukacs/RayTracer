@@ -1,144 +1,69 @@
-use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
-};
+use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent::{CloseRequested, RedrawRequested, Resized, ScaleFactorChanged}, event_loop::{ControlFlow, EventLoop}, window::{Window, WindowAttributes, WindowId}};
 
-pub extern crate nalgebra_glm as glm;
+struct App {
+    window: Option<Window>,
+    window_id: Option<WindowId>,
 
-mod renderer;
-mod fps_counter;
-mod gui_app;
-mod sphere;
-mod gpu_buffer;
-mod scene;
-use renderer::Renderer;
+    start_time: std::time::Instant,
+    last_time: std::time::Instant,
+}
 
-use scene::{Material, Scene, Texture};
-use sphere::Sphere;
+impl Default for App {
+    fn default() -> Self {
+        let time = std::time::Instant::now();
+        Self { window: Default::default(), window_id: Default::default(), start_time: time, last_time: time.clone() }
+    }
+}
 
-use wgpu;
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window_attributes = WindowAttributes::default()
+            .with_inner_size(LogicalSize::new(800, 600))
+            .with_title("GPU Ray Tracer");
+        let window = event_loop.create_window(window_attributes).unwrap();
+        self.window_id = Some(window.id());
+        self.window = Some(window);
+    }
 
-fn main() {
-    env_logger::init();
-
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("GPU Ray Tracer")
-        .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
-        .build(&event_loop)
-        .unwrap();
-
-    let scene = setup_scene();
-
-    let mut renderer = pollster::block_on(Renderer::new(window, scene));
-
-    let start_time = std::time::Instant::now();
-    let mut last_time = start_time.clone();
-
-    event_loop.run(move |event, _, control_flow| {
-        renderer.platform.handle_event(&event);
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    )
+    {
+        // Return if it's not our window's event
+        if self.window_id != Some(window_id) { return; }
 
         match event {
-            Event::WindowEvent {
-                ref event,
-                window_id
-            } if window_id == renderer.window.id() => {
-                match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::ExitWithCode(0),
-                    WindowEvent::Resized(physical_size) => {
-                        renderer.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        renderer.resize(**new_inner_size);
-                    }
-                    _ => {}
-                }
-            }
-            Event::RedrawRequested(_) => {
-                renderer.platform.update_time(start_time.elapsed().as_secs_f64());//TODO: maybe this can be moved to renderer.update()?
-                match renderer.render() {
-                    Ok(_) => {}
-                    // Recreate the swap_chain if lost
-                    Err(wgpu::SurfaceError::Lost) => {renderer.resize(renderer.size)}
-                    // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => {*control_flow = ControlFlow::Exit}
-                    // All other errors (Outdated, Timeout) should be resolved by the next frame
-                    Err(e) => eprintln!("{:?}", e),
-                }
-            }
-            Event::MainEventsCleared => {
-                {
-                    let delta_time = last_time.elapsed().as_secs_f32();
-                    last_time = std::time::Instant::now();
-                    renderer.update(delta_time);
-                }
-                renderer.window.request_redraw();
-            }
-            _ => {}
+            CloseRequested => event_loop.exit(),
+            Resized(_physical_size) => {
+                // TODO
+            },
+            ScaleFactorChanged { scale_factor: _, .. } => {
+                // TODO we don't get the inner size anymore, winit sends another Resized event afterwards
+                // If our renderer ever needs the scale_factor, this is where we get it though
+            },
+            RedrawRequested => {
+                // TODO implement once renderer works
+            },
+            _ => {},
         }
-    });
+    }
+
+    fn about_to_wait(&mut self, _: &winit::event_loop::ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
 }
 
+fn main() {
+    let event_loop = EventLoop::new().unwrap();
 
-fn setup_scene() -> scene::Scene {
-    let materials = vec![
-        Material::Checkerboard {
-            even: Texture::new_from_color(glm::vec3(0.5_f32, 0.7_f32, 0.8_f32)),
-            odd: Texture::new_from_color(glm::vec3(0.9_f32, 0.9_f32, 0.9_f32)),
-        },
-        Material::Lambertian {
-            albedo: Texture::new_from_image("assets/moon.jpeg")
-                .expect("Hardcoded path should be valid"),
-        },
-        Material::Metal {
-            albedo: Texture::new_from_color(glm::vec3(1_f32, 0.85_f32, 0.57_f32)),
-            fuzz: 0.3_f32,
-        },
-        Material::Metal {
-            albedo: Texture::new_from_color(glm::vec3(0.5_f32, 0.85_f32, 1_f32)),
-            fuzz: 0.0_f32,
-        },
-        Material::Dielectric {
-            refraction_index: 1.5_f32,
-        },
-        Material::Lambertian {
-            albedo: Texture::new_from_image("assets/earthmap.jpeg")
-                .expect("Hardcoded path should be valid"),
-        },
-        Material::Emissive {
-            emit: Texture::new_from_scaled_image("assets/sun.jpeg", 50.0)
-                .expect("Hardcoded path should be valid"),
-        },
-        Material::Lambertian {
-            albedo: Texture::new_from_color(glm::vec3(0.3_f32, 0.9_f32, 0.9_f32)),
-        },
-        Material::Emissive {
-            emit: Texture::new_from_color(glm::vec3(50.0_f32, 0.0_f32, 0.0_f32)),
-        },
-        Material::Emissive {
-            emit: Texture::new_from_color(glm::vec3(0.0_f32, 50.0_f32, 0.0_f32)),
-        },
-        Material::Emissive {
-            emit: Texture::new_from_color(glm::vec3(0.0, 0.0, 50.0)),
-        },
-    ];
-
-    let spheres = vec![
-        Sphere::new(glm::vec3(0.0, -510.0, -1.0), 500.0, 10_u32),
-        // left row
-        Sphere::new(glm::vec3(-2.0, 0.0, -3.0), 1.0, 2_u32),
-        Sphere::new(glm::vec3(0.0, 0.0, -3.0), 1.0, 1_u32),
-        Sphere::new(glm::vec3(2.0, 0.0, -3.0), 1.0, 3_u32),
-        // middle row
-        Sphere::new(glm::vec3(-5.0, 1.0, 0.0), 1.0, 2_u32),
-        Sphere::new(glm::vec3(0.0, 1.0, 1.0), 1.0, 3_u32),
-        Sphere::new(glm::vec3(5.0, 1.0, 0.0), 1.0, 6_u32),
-        // right row
-        Sphere::new(glm::vec3(-5.0, 0.8, 4.0), 0.8, 1_u32),
-        Sphere::new(glm::vec3(0.0, 1.2, 4.0), 1.2, 4_u32),
-        Sphere::new(glm::vec3(5.0, 2.0, 4.0), 2.0, 5_u32),
-    ];
-
-    Scene { spheres, materials }
+    event_loop.set_control_flow(ControlFlow::Poll);
+    
+    let mut app = App::default();
+    let _ = event_loop.run_app(&mut app);
 }
+
