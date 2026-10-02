@@ -1,62 +1,16 @@
-use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent::{CloseRequested, RedrawRequested, Resized, ScaleFactorChanged}, event_loop::{ControlFlow, EventLoop}, window::{Window, WindowAttributes, WindowId}};
+use winit::event_loop::{ControlFlow, EventLoop};
 
-struct App {
-    window: Option<Window>,
-    window_id: Option<WindowId>,
+mod app;
+mod renderer;
+mod scene;
+mod fps_counter;
+mod gui_app;
+mod gpu_buffer;
+mod sphere;
 
-    start_time: std::time::Instant,
-    last_time: std::time::Instant,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        let time = std::time::Instant::now();
-        Self { window: Default::default(), window_id: Default::default(), start_time: time, last_time: time.clone() }
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default()
-            .with_inner_size(LogicalSize::new(800, 600))
-            .with_title("GPU Ray Tracer");
-        let window = event_loop.create_window(window_attributes).unwrap();
-        self.window_id = Some(window.id());
-        self.window = Some(window);
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        window_id: winit::window::WindowId,
-        event: winit::event::WindowEvent,
-    )
-    {
-        // Return if it's not our window's event
-        if self.window_id != Some(window_id) { return; }
-
-        match event {
-            CloseRequested => event_loop.exit(),
-            Resized(_physical_size) => {
-                // TODO
-            },
-            ScaleFactorChanged { scale_factor: _, .. } => {
-                // TODO we don't get the inner size anymore, winit sends another Resized event afterwards
-                // If our renderer ever needs the scale_factor, this is where we get it though
-            },
-            RedrawRequested => {
-                // TODO implement once renderer works
-            },
-            _ => {},
-        }
-    }
-
-    fn about_to_wait(&mut self, _: &winit::event_loop::ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
-    }
-}
+use app::App;
+use scene::{Scene, Material, Texture};
+use nalgebra_glm as glm;
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
@@ -64,6 +18,68 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Poll);
     
     let mut app = App::default();
+    app.scene = Some(setup_scene());
     let _ = event_loop.run_app(&mut app);
 }
 
+fn setup_scene() -> Scene {
+    let materials = vec![
+        Material::Checkerboard {
+            even: Texture::new_from_color(glm::vec3(0.5_f32, 0.7_f32, 0.8_f32)),
+            odd: Texture::new_from_color(glm::vec3(0.9_f32, 0.9_f32, 0.9_f32)),
+        },
+        Material::Lambertian {
+            albedo: Texture::new_from_image("assets/moon.jpeg")
+                .expect("Hardcoded path should be valid"),
+        },
+        Material::Metal {
+            albedo: Texture::new_from_color(glm::vec3(1_f32, 0.85_f32, 0.57_f32)),
+            fuzz: 0.3_f32,
+        },
+        Material::Metal {
+            albedo: Texture::new_from_color(glm::vec3(0.5_f32, 0.85_f32, 1_f32)),
+            fuzz: 0.0_f32,
+        },
+        Material::Dielectric {
+            refraction_index: 1.5_f32,
+        },
+        Material::Lambertian {
+            albedo: Texture::new_from_image("assets/earthmap.jpeg")
+                .expect("Hardcoded path should be valid"),
+        },
+        Material::Emissive {
+            emit: Texture::new_from_scaled_image("assets/sun.jpeg", 50.0)
+                .expect("Hardcoded path should be valid"),
+        },
+        Material::Lambertian {
+            albedo: Texture::new_from_color(glm::vec3(0.3_f32, 0.9_f32, 0.9_f32)),
+        },
+        Material::Emissive {
+            emit: Texture::new_from_color(glm::vec3(50.0_f32, 0.0_f32, 0.0_f32)),
+        },
+        Material::Emissive {
+            emit: Texture::new_from_color(glm::vec3(0.0_f32, 50.0_f32, 0.0_f32)),
+        },
+        Material::Emissive {
+            emit: Texture::new_from_color(glm::vec3(0.0, 0.0, 50.0)),
+        },
+    ];
+
+    let spheres = vec![
+        Sphere::new(glm::vec3(0.0, -510.0, -1.0), 500.0, 10_u32),
+        // left row
+        Sphere::new(glm::vec3(-2.0, 0.0, -3.0), 1.0, 2_u32),
+        Sphere::new(glm::vec3(0.0, 0.0, -3.0), 1.0, 1_u32),
+        Sphere::new(glm::vec3(2.0, 0.0, -3.0), 1.0, 3_u32),
+        // middle row
+        Sphere::new(glm::vec3(-5.0, 1.0, 0.0), 1.0, 2_u32),
+        Sphere::new(glm::vec3(0.0, 1.0, 1.0), 1.0, 3_u32),
+        Sphere::new(glm::vec3(5.0, 1.0, 0.0), 1.0, 6_u32),
+        // right row
+        Sphere::new(glm::vec3(-5.0, 0.8, 4.0), 0.8, 1_u32),
+        Sphere::new(glm::vec3(0.0, 1.2, 4.0), 1.2, 4_u32),
+        Sphere::new(glm::vec3(5.0, 2.0, 4.0), 2.0, 5_u32),
+    ];
+
+    Scene { spheres, materials }
+}
