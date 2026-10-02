@@ -12,7 +12,7 @@ impl GuiApp {
         .resizable(false)
         .interactable(false)
         .collapsible(false)
-        .frame(egui::Frame::none())
+        .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
             ui.label(format!("FPS: {:.2}", fps));
             ui.label(format!("Frame Time: {:.2} ms", frame_time * 1000.0));

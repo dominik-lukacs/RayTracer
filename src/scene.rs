@@ -15,6 +15,7 @@ pub enum Material {
 
 use image::RgbaImage;
 use thiserror::Error;
+use nalgebra_glm as glm;
 
 pub struct Texture {
     dimensions: (u32, u32),

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use winit::event_loop::{ControlFlow, EventLoop};
 
 mod app;
@@ -11,14 +13,24 @@ mod sphere;
 use app::App;
 use scene::{Scene, Material, Texture};
 use nalgebra_glm as glm;
+use sphere::Sphere;
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
+
+    let start_time = std::time::Instant::now();
+    let last_time = start_time.clone();
     
-    let mut app = App::default();
-    app.scene = Some(setup_scene());
+    let mut app = App {
+        renderer: None,
+        scene: Arc::new(setup_scene()),
+        window: None,
+        window_id: None,
+        start_time,
+        last_time,
+    };
     let _ = event_loop.run_app(&mut app);
 }
 

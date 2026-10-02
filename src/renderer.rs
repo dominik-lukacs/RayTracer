@@ -12,9 +12,7 @@ use crate::gpu_buffer::StorageBuffer;
 
 pub struct Renderer {
     window: Arc<Window>,
-    window_id: Option<WindowId>,
-    start_time: std::time::Instant,
-    last_time: std::time::Instant,
+    pub window_id: Option<WindowId>,
 
     instance: wgpu::Instance,
     //adapter: wgpu::Adapter,
@@ -48,13 +46,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub async fn new(display: OwnedDisplayHandle, window: Arc<Window>, scene: Scene) -> Self {
+    pub async fn new(display: OwnedDisplayHandle, window: Arc<Window>, scene: Arc<Scene>) -> Self {
         // Create the instance, adapter, device, and queue, and setup the surface
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display)));
 
-        let surface = instance.create_surface(&window).unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -373,8 +371,6 @@ impl Renderer {
         let gui_app = GuiApp::new();
 
         let window_id = Some(window.id());
-        let start_time = std::time::Instant::now();
-        let last_time = start_time.clone();
 
         Renderer {
             window,
@@ -401,8 +397,6 @@ impl Renderer {
             egui_ctx,
             egui_state,
             window_id,
-            start_time,
-            last_time,
         }
     }
 
@@ -443,9 +437,27 @@ impl Renderer {
                 self.configure_surface();
                 return;
             },
-            _ => return,
         };
         let texture_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let fps = self.fps_counter.average_fps();
+        let frame_time = self.fps_counter.average_frame_time();
+        let full_output = self.egui_ctx.run_ui(raw_input, |_ui| {
+            self.gui_app.ui(&self.egui_ctx, fps, frame_time);
+        });
+        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+
+        let screen_descriptor = &egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer.update_texture(&self.device, &self.queue, *id, &delta[0]);
+        }
+        let egui_command_buffers = self.egui_renderer.update_buffers(&self.device, &self.queue, &mut encoder, &clipped_primitives, screen_descriptor);
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Screen Pass"),
@@ -467,30 +479,21 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
-            });
+            })
+            .forget_lifetime();
             render_pass.set_pipeline(&self.screen_pipeline);
             render_pass.set_bind_group(0, &self.screen_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
+
+            self.egui_renderer.render(&mut render_pass, &clipped_primitives, &screen_descriptor);
         }
-        // egui render pass
-        let raw_input = egui::RawInput::default();
-        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-            self.gui_app.ui(&self.egui_ctx, self.fps_counter.average_fps(), self.fps_counter.average_frame_time());
-        });
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
-        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        self.queue.submit(egui_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        self.window.pre_present_notify();
+        self.queue.present(output);
 
-        let screen_descriptor = &egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.size.width, self.size.height],
-            pixels_per_point: (self.window.scale_factor() as f32)
-        };
-        let egui_command_buffers = self.egui_renderer.update_buffers(&self.device, &self.queue, &mut encoder, &clipped_primitives, screen_descriptor);
-        // self.egui_renderer.update_texture(&self.device, &self.queue, );
-        self.egui_renderer.render(render_pass, paint_jobs, screen_descriptor);
-
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        // output.present();
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -647,5 +650,13 @@ impl Renderer {
     pub fn update(&mut self, _delta_time: f32) {
         self.fps_counter.update(_delta_time);
         //println!("FPS: {}", self.fps_counter.average_fps());
+    }
+
+    pub fn handle_egui_event(&mut self, event: &winit::event::WindowEvent) -> bool {
+        let response = self.egui_state.on_window_event(&self.window, event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
+        response.consumed
     }
 }
