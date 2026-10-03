@@ -110,7 +110,7 @@ impl CameraController {
         }
     }
 
-    pub fn process_keyboard(&mut seld, key: VirtualKeyCode, state: ElementState) -> bool {
+    pub fn process_keyboard(&mut self, key: VirtualKeyCode, state: ElementState) -> bool {
         let amount = if state == ElementState::Pressed { 1.0 } else { 0.0 };
         match key {
             VirtualKeyCode::W | VirtualKeyCode::Up => {

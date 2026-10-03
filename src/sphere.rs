@@ -1,3 +1,5 @@
+use nalgebra_glm as glm;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Sphere {

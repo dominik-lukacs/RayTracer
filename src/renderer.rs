@@ -1,19 +1,23 @@
-use winit::window::Window;
+use std::sync::Arc;
+
+use wgpu::CurrentSurfaceTexture::{Lost, Occluded, Outdated, Suboptimal, Success, Timeout, Validation};
+use wgpu::ExperimentalFeatures;
+use winit::event_loop::OwnedDisplayHandle;
+use winit::window::{Window, WindowId};
 
 use crate::scene::{Material, GpuMaterial};
 use crate::{fps_counter::FpsCounter, scene::Scene};
 use crate::gui_app::GuiApp;
 use crate::gpu_buffer::StorageBuffer;
-use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
-use egui_winit_platform::{Platform, PlatformDescriptor};
 
 pub struct Renderer {
-    pub window: Window,
+    window: Arc<Window>,
+    pub window_id: Option<WindowId>,
 
-    //instance: wgpu::Instance,
+    instance: wgpu::Instance,
     //adapter: wgpu::Adapter,
     device: wgpu::Device,
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
     storage_format: wgpu::TextureFormat,
     queue: wgpu::Queue,
@@ -35,28 +39,27 @@ pub struct Renderer {
 
     //egui stuff
     fps_counter: FpsCounter,
-    pub platform: egui_winit_platform::Platform,
     gui_app: GuiApp,
-    egui_renderpass: RenderPass,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
 }
 
 impl Renderer {
-    pub async fn new(window: Window, scene: Scene) -> Self {
+    pub async fn new(display: OwnedDisplayHandle, window: Arc<Window>, scene: Arc<Scene>) -> Self {
         // Create the instance, adapter, device, and queue, and setup the surface
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display)));
 
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .unwrap();
@@ -64,15 +67,17 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
-                    limits: if cfg!(target_arch = "wasm32") {
+                    required_features: wgpu::Features::empty(),
+                    required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
                         wgpu::Limits::default()
                     },
                     label: Some("Device"),
+                    experimental_features: ExperimentalFeatures::disabled(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    trace: wgpu::Trace::Off,
                 },
-                None,
             )
             .await
             .unwrap();
@@ -88,9 +93,11 @@ impl Renderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
+            color_space: wgpu::SurfaceColorSpace::Srgb,
             width: size.width,
             height: size.height,
             present_mode: surface_caps.present_modes[0],
+            desired_maximum_frame_latency: 2,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
         };
@@ -123,7 +130,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             lod_min_clamp: 0.0,
             lod_max_clamp: 100.0,
             compare: None,
@@ -251,8 +258,8 @@ impl Renderer {
 
         let ray_tracing_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Ray Tracing Pipeline Layout"),
-            bind_group_layouts: &[&ray_tracing_bind_group_layout, &scene_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&ray_tracing_bind_group_layout), Some(&scene_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let ray_tracing_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -262,7 +269,9 @@ impl Renderer {
                 label: Some("Ray Tracing Shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("ray_tracing_kernel.wgsl").into()),
             }),
-            entry_point: "main",
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
         });
 
         let screen_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -300,8 +309,8 @@ impl Renderer {
 
         let screen_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Screen Pipeline Layout"),
-            bind_group_layouts: &[&screen_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&screen_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -314,17 +323,19 @@ impl Renderer {
             layout: Some(&screen_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader_module,
-                entry_point: "vert_main",
+                entry_point: Some("vert_main"),
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
-                entry_point: "frag_main",
+                entry_point: Some("frag_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -337,27 +348,35 @@ impl Renderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         // egui stuff
         let fps_counter = FpsCounter::new();
-        let platform: Platform = Platform::new(PlatformDescriptor {
-            physical_width: size.width as u32,
-            physical_height: size.height as u32,
-            scale_factor: window.scale_factor(),
-            font_definitions: egui::FontDefinitions::default(),
-            style: Default::default(),
-        });
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(device.limits().max_texture_dimension_2d as usize),
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &device,
+            surface_format,
+            egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: false, predictable_texture_filtering: false },
+        );
         let gui_app = GuiApp::new();
-        let egui_renderpass = RenderPass::new(&device, surface_format, 1);
+
+        let window_id = Some(window.id());
 
         Renderer {
             window,
-            //adapter,
+            instance,
             surface_format,
             storage_format,
-            //instance,
             surface,
             device,
             queue,
@@ -370,16 +389,18 @@ impl Renderer {
             ray_tracing_pipeline,
             screen_bind_group,
             screen_pipeline,
-            fps_counter,
-            platform,
-            gui_app,
-            egui_renderpass,
             scene_bind_group,
             scene_bind_group_layout,
+            fps_counter,
+            gui_app,
+            egui_renderer,
+            egui_ctx,
+            egui_state,
+            window_id,
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
@@ -387,6 +408,7 @@ impl Renderer {
         {
             let mut ray_trace_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Ray Tracing Pass"),
+                timestamp_writes: None,
             });
             ray_trace_pass.set_pipeline(&self.ray_tracing_pipeline);
             ray_trace_pass.set_bind_group(0, &self.ray_tracing_bind_group, &[]);
@@ -394,13 +416,54 @@ impl Renderer {
             ray_trace_pass.dispatch_workgroups(self.size.width, self.size.height, 1);
         }
 
-        let output = self.surface.get_current_texture()?;
+        let output = match self.surface.get_current_texture() {
+            Success(texture) => texture,
+            Occluded | Timeout => return,
+            Suboptimal(texture) => {
+                drop(texture);
+                self.configure_surface();
+                return;
+            },
+            Outdated => {
+                self.configure_surface();
+                return;
+            },
+            Validation => {
+                // TODO not sure what to do here
+                return;
+            },
+            Lost => {
+                self.surface = self.instance.create_surface(self.window.clone()).unwrap();
+                self.configure_surface();
+                return;
+            },
+        };
         let texture_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let fps = self.fps_counter.average_fps();
+        let frame_time = self.fps_counter.average_frame_time();
+        let full_output = self.egui_ctx.run_ui(raw_input, |_ui| {
+            self.gui_app.ui(&self.egui_ctx, fps, frame_time);
+        });
+        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+
+        let screen_descriptor = &egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer.update_texture(&self.device, &self.queue, *id, &delta[0]);
+        }
+        let egui_command_buffers = self.egui_renderer.update_buffers(&self.device, &self.queue, &mut encoder, &clipped_primitives, screen_descriptor);
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Screen Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &texture_view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color{
@@ -409,51 +472,39 @@ impl Renderer {
                             b: 0.3,
                             a: 1.0,
                         }),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
-            });
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
             render_pass.set_pipeline(&self.screen_pipeline);
             render_pass.set_bind_group(0, &self.screen_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
+
+            self.egui_renderer.render(&mut render_pass, &clipped_primitives, &screen_descriptor);
         }
-        // egui render pass
+        self.queue.submit(egui_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        self.window.pre_present_notify();
+        self.queue.present(output);
 
-        self.platform.begin_frame();
-        self.gui_app.ui(&self.platform.context(), self.fps_counter.average_fps(), self.fps_counter.average_frame_time());
-
-        let full_output = self.platform.end_frame(Some(&self.window));
-        let paint_jobs = self.platform.context().tessellate(full_output.shapes);
-
-        let screen_descriptor = ScreenDescriptor {
-            physical_width: self.size.width,
-            physical_height: self.size.height,
-            scale_factor: self.window.scale_factor() as f32,
-        };
-        let tdelta: egui::TexturesDelta = full_output.textures_delta;
-        self.egui_renderpass.add_textures(&self.device, &self.queue, &tdelta).expect("Failed to add textures");
-        self.egui_renderpass.update_buffers(&self.device, &self.queue, &paint_jobs, &screen_descriptor);
-        self.egui_renderpass.execute(
-            &mut encoder,
-            &texture_view,
-            &paint_jobs,
-            &screen_descriptor,
-            None
-        ).unwrap();
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        self.egui_renderpass.remove_textures(tdelta).expect("Failed to remove textures");
-
-        Ok(())
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         self.size = new_size;
-        self.config.width = new_size.width;
-        self.config.height = new_size.height;
+
+        self.configure_surface();
+    }
+
+    pub fn configure_surface(&mut self) {
+        self.config.width = self.size.width;
+        self.config.height = self.size.height;
         self.surface.configure(&self.device, &self.config);
 
         // Create a new color buffer with the new size
@@ -501,8 +552,8 @@ impl Renderer {
 
         let ray_tracing_pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Ray Tracing Pipeline Layout"),
-            bind_group_layouts: &[&ray_tracing_bind_group_layout, &self.scene_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&ray_tracing_bind_group_layout), Some(&self.scene_bind_group_layout)],
+            immediate_size: 0,
         });
 
         self.ray_tracing_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -512,7 +563,9 @@ impl Renderer {
                 label: Some("Ray Tracing Shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("ray_tracing_kernel.wgsl").into()),
             }),
-            entry_point: "main",
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
         });
 
         let screen_bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -550,8 +603,8 @@ impl Renderer {
 
         let screen_pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Screen Pipeline Layout"),
-            bind_group_layouts: &[&screen_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&screen_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -564,17 +617,19 @@ impl Renderer {
             layout: Some(&screen_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader_module,
-                entry_point: "vert_main",
+                entry_point: Some("vert_main"),
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
-                entry_point: "frag_main",
+                entry_point: Some("frag_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: self.surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -587,12 +642,21 @@ impl Renderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
     }
 
     pub fn update(&mut self, _delta_time: f32) {
         self.fps_counter.update(_delta_time);
         //println!("FPS: {}", self.fps_counter.average_fps());
+    }
+
+    pub fn handle_egui_event(&mut self, event: &winit::event::WindowEvent) -> bool {
+        let response = self.egui_state.on_window_event(&self.window, event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
+        response.consumed
     }
 }

@@ -1,87 +1,40 @@
-use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
-};
+use std::sync::Arc;
 
-pub extern crate nalgebra_glm as glm;
+use winit::event_loop::{ControlFlow, EventLoop};
 
+mod app;
 mod renderer;
+mod scene;
 mod fps_counter;
 mod gui_app;
-mod sphere;
 mod gpu_buffer;
-mod scene;
-use renderer::Renderer;
+mod sphere;
 
-use scene::{Material, Scene, Texture};
+use app::App;
+use scene::{Scene, Material, Texture};
+use nalgebra_glm as glm;
 use sphere::Sphere;
 
-use wgpu;
-
 fn main() {
-    env_logger::init();
+    let event_loop = EventLoop::new().unwrap();
 
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("GPU Ray Tracer")
-        .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
-        .build(&event_loop)
-        .unwrap();
-
-    let scene = setup_scene();
-
-    let mut renderer = pollster::block_on(Renderer::new(window, scene));
+    event_loop.set_control_flow(ControlFlow::Poll);
 
     let start_time = std::time::Instant::now();
-    let mut last_time = start_time.clone();
-
-    event_loop.run(move |event, _, control_flow| {
-        renderer.platform.handle_event(&event);
-
-        match event {
-            Event::WindowEvent {
-                ref event,
-                window_id
-            } if window_id == renderer.window.id() => {
-                match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::ExitWithCode(0),
-                    WindowEvent::Resized(physical_size) => {
-                        renderer.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        renderer.resize(**new_inner_size);
-                    }
-                    _ => {}
-                }
-            }
-            Event::RedrawRequested(_) => {
-                renderer.platform.update_time(start_time.elapsed().as_secs_f64());//TODO: maybe this can be moved to renderer.update()?
-                match renderer.render() {
-                    Ok(_) => {}
-                    // Recreate the swap_chain if lost
-                    Err(wgpu::SurfaceError::Lost) => {renderer.resize(renderer.size)}
-                    // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => {*control_flow = ControlFlow::Exit}
-                    // All other errors (Outdated, Timeout) should be resolved by the next frame
-                    Err(e) => eprintln!("{:?}", e),
-                }
-            }
-            Event::MainEventsCleared => {
-                {
-                    let delta_time = last_time.elapsed().as_secs_f32();
-                    last_time = std::time::Instant::now();
-                    renderer.update(delta_time);
-                }
-                renderer.window.request_redraw();
-            }
-            _ => {}
-        }
-    });
+    let last_time = start_time.clone();
+    
+    let mut app = App {
+        renderer: None,
+        scene: Arc::new(setup_scene()),
+        window: None,
+        window_id: None,
+        start_time,
+        last_time,
+    };
+    let _ = event_loop.run_app(&mut app);
 }
 
-
-fn setup_scene() -> scene::Scene {
+fn setup_scene() -> Scene {
     let materials = vec![
         Material::Checkerboard {
             even: Texture::new_from_color(glm::vec3(0.5_f32, 0.7_f32, 0.8_f32)),
