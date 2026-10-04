@@ -8,29 +8,45 @@ const FRAC_1_PI = 0.31830987f;
 const FRAC_PI_2 = 1.5707964f;
 
 
-@group(0) @binding(0) var color_buffer: texture_storage_2d<rgba8unorm, write>;
+struct Params {
+    width: u32,
+    height: u32,
+    max_bounces: u32,
+    steps: u32,
+    active_count: u32,
+    group_start: u32,
+    epoch: u32,
+    _pad: u32,
+}
+
+struct PathState {
+    origin: vec3<f32>,
+    bounce: u32,
+    direction: vec3<f32>,
+    rng: u32,
+    throughput: vec3<f32>,
+    flags: u32, // 0 = uninitialized
+    radiance: vec3<f32>,
+    _pad: f32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read_write> paths: array<PathState>;
+@group(0) @binding(2) var<storage, read_write> accum: array<vec4<f32>>;
 
 @group(1) @binding(0) var<storage, read> spheres: array<Sphere>;
 @group(1) @binding(1) var<storage, read> materials: array<Material>;
 @group(1) @binding(2) var<storage, read> textures: array<array<f32, 3>>;
 @group(1) @binding(3) var<storage, read> lights: array<u32>;
 
-
-
 fn length_squared(v: vec3<f32>) -> f32 {
     return v.x*v.x + v.y*v.y + v.z*v.z;
 }
 
-@compute @workgroup_size(1,1,1)
-fn main(@builtin(global_invocation_id) GlobalInvocationID : vec3<u32>) {
-
-    let screen_size: vec2<u32> = textureDimensions(color_buffer);
-    let screen_pos : vec2<i32> = vec2<i32>(i32(GlobalInvocationID.x), i32(GlobalInvocationID.y));
-
-    var rngState = initRng(vec2(GlobalInvocationID.x, GlobalInvocationID.y), screen_size, 0u);
-
-    let aspect_ratio = f32(screen_size.x) / f32(screen_size.y);
-    let viewport_height = f32(screen_size.y) / 500.0;
+fn cameraRay(pixel: vec2<u32>, rng: ptr<function, u32>) -> Ray {
+    let size = vec2<f32>(f32(params.width), f32(params.height));
+    let aspect_ratio = size.x / size.y;
+    let viewport_height = size.y / 500.0;
     let viewport_width = aspect_ratio * viewport_height;
     let focal_length = 1.0;
 
@@ -39,20 +55,63 @@ fn main(@builtin(global_invocation_id) GlobalInvocationID : vec3<u32>) {
     let vertical = vec3<f32>(0.0, viewport_height, 0.0);
     let upper_left_corner = origin - horizontal/2.0 + vertical/2.0 - vec3<f32>(0.0, 0.0, focal_length);
 
+    // Sub-pixel jitter
+    let u = (f32(pixel.x) + rngNextFloat(rng)) / size.x;
+    let v = (f32(pixel.y) + rngNextFloat(rng)) / size.y;
 
-    let u = f32(screen_pos.x) / (f32(screen_size.x) - 1.0);
-    let v = f32(screen_pos.y) / (f32(screen_size.y) - 1.0);
     var ray: Ray;
     ray.origin = origin;
     ray.direction = normalize(upper_left_corner + u*horizontal - v*vertical - origin);
+    return ray;
+}
 
+fn newPath(pixel: vec2<u32>, rng: ptr<function, u32>) -> PathState {
+    let ray = cameraRay(pixel, rng);
+    return PathState(ray.origin, 0u, ray.direction, 0u, vec3(1f), 1u, vec3(0f), 0f);
+}
 
-    //var pixel_color: vec3<f32> = ray_color(ray);
-    var pixel_color: vec3<f32> = rayColor(ray, &rngState);
-    //let num = f32(screen_pos.x) / f32(screen_size.x);
-    //var pixel_color: vec3<f32> = vec3<f32>(num, num, num);
+fn isFiniteColor(c: vec3<f32>) -> bool {
+    // Written so that NaN compares false and gets rejected
+    return all(abs(c) < vec3<f32>(1e20));
+}
 
-    textureStore(color_buffer, screen_pos, vec4<f32>(pixel_color, 1.0));
+@compute @workgroup_size(8, 8, 1)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let group_total = nwg.x * nwg.y;
+    let group_idx = wid.y * nwg.x + wid.x;
+    if (group_idx + group_total - params.group_start) % group_total >= params.active_count {
+        return;
+    }
+    if gid.x >= params.width || gid.y >= params.height {
+        return;
+    }
+
+    let idx = gid.y * params.width + gid.x;
+    var st = paths[idx];
+    var acc = accum[idx];
+    var rng = st.rng;
+
+    if st.flags == 0u {
+        rng = initRng(gid.xy, vec2<u32>(params.width, params.height), params.epoch);
+        st = newPath(gid.xy, &rng);
+    }
+
+    for (var i = 0u; i < params.steps; i += 1u) {
+        if advancePath(&st, &rng) {
+            if isFiniteColor(st.radiance) {
+                acc += vec4<f32>(st.radiance, 1.0);
+            }
+            st = newPath(gid.xy, &rng);
+        }
+    }
+
+    st.rng = rng;
+    paths[idx] = st;
+    accum[idx] = acc;
 }
 
 fn ray_color(ray: Ray) -> vec3<f32> {
@@ -99,8 +158,8 @@ struct Sphere {
 }
 
 struct Ray {
-    direction: vec3<f32>,
     origin: vec3<f32>,
+    direction: vec3<f32>,
 }
 
 struct Scatter {
@@ -193,38 +252,48 @@ fn intersect(ray: Ray, intersection: ptr<function, Intersection>) -> bool {
     return false;
 }
 
-fn rayColor(primaryRay: Ray, rngState: ptr<function, u32>) -> vec3<f32> {
-    var ray = primaryRay;
+fn advancePath(st: ptr<function, PathState>, rng: ptr<function, u32>) -> bool {
+    let ray = Ray((*st).origin, (*st).direction);
+    var intersection = Intersection();
 
-    var color = vec3(0f);
-    var throughput = vec3(1f);
-
-    for (var bounce = 0u; bounce < 10u; bounce += 1u) {//bounce < samplingParams.numBounces
-        var intersection = Intersection();
-
-        if intersect(ray, &intersection) {
-            let material = materials[intersection.material_idx];
-
-            if material.id == 4u {
-                let emissionTexture = material.desc1;
-                let emissionColor = textureLookup(emissionTexture, intersection.u, intersection.v);
-                color += throughput * emissionColor;
-                break;
-            }
-
-            var scatter = scatterRay(ray, intersection, material, rngState);
-            ray = scatter.ray;
-            throughput *= scatter.throughput;
-        } else {
-            // The ray missed. Output background color.
-            let t = 0.5 * (ray.direction.y + 1.0);
-            let sky_color = (1.0 - t) * vec3<f32>(1.0, 1.0, 1.0) + t * vec3<f32>(0.5, 0.7, 1.0);
-            color += throughput * sky_color;
-            break;
-        }
+    if !intersect(ray, &intersection) {
+        // Ray missed
+        let t = 0.5 * (normalize(ray.direction).y + 1.0);
+        let sky_color = (1.0 - t) * vec3<f32>(1.0, 1.0, 1.0) + t * vec3<f32>(0.5, 0.7, 1.0);
+        (*st).radiance += (*st).throughput * sky_color;
+        return true;
     }
 
-    return color;
+    let material = materials[intersection.material_idx];
+
+
+    if material.id == 4u {
+        let emissionColor = textureLookup(material.desc1, intersection.u, intersection.v);
+        (*st).radiance += (*st).throughput * emissionColor;
+        return true;
+    }
+
+    if (*st).bounce + 1u >= params.max_bounces {
+        return true;
+    }
+
+    let scatter = scatterRay(ray, intersection, material, rng);
+    (*st).origin = scatter.ray.origin;
+    (*st).direction = scatter.ray.direction;
+    (*st).throughput = scatter.throughput;
+    (*st).bounce += 1u;
+
+    // Russian roulette: low contribution paths killed early
+    if (*st).bounce >= 3u  {
+        let tp = (*st).throughput;
+        let p = clamp(max(tp.x, max(tp.y, tp.z)), 0.05, 1.0);
+        if rngNextFloat(rng) > p {
+            return true;
+        }
+        (*st).throughput = tp / p;
+    }
+
+    return false;
 }
 
 fn scatterRay(wo: Ray, hit: Intersection, material: Material, rngState: ptr<function, u32>) -> Scatter {
@@ -355,7 +424,7 @@ fn pixarOnb(n: vec3<f32>) -> mat3x3<f32> {
 fn scatterMetal(wo: Ray, hit: Intersection, texture: TextureDescriptor, fuzz: f32, rngState: ptr<function, u32>) -> Scatter {
     let scatterDirection = reflect(wo.direction, hit.n) + fuzz * rngNextVec3InUnitSphere(rngState);
     let albedo = textureLookup(texture, hit.u, hit.v);
-    return Scatter(Ray(scatterDirection, hit.p), albedo);
+    return Scatter(Ray(hit.p, scatterDirection), albedo);
 }
 
 
@@ -416,13 +485,14 @@ fn rngNextVec3InUnitSphere(state: ptr<function, u32>) -> vec3<f32> {
 }
 
 fn rngNextUintInRange(state: ptr<function, u32>, min: u32, max: u32) -> u32 {
-    rngNextInt(state);
-    return min + (*state) % (max - min);
+    return min + rngNextInt(state) % (max - min);
 }
 
 fn rngNextFloat(state: ptr<function, u32>) -> f32 {
-    rngNextInt(state);
-    return f32(*state) / f32(0xffffffffu);
+    // rngNextInt(state);
+    // return f32(*state) / f32(0xffffffffu);
+    // TODO AI generated, check if above is better
+    return f32(rngNextInt(state) >> 8u) * (1.0 / 16777216.0);
 }
 
 fn initRng(pixel: vec2<u32>, resolution: vec2<u32>, frame: u32) -> u32 {
@@ -431,13 +501,14 @@ fn initRng(pixel: vec2<u32>, resolution: vec2<u32>, frame: u32) -> u32 {
     return jenkinsHash(seed);
 }
 
-fn rngNextInt(state: ptr<function, u32>) {
+fn rngNextInt(state: ptr<function, u32>) -> u32 {
     // PCG random number generator
     // Based on https://www.shadertoy.com/view/XlGcRh
 
-    let oldState = *state + 747796405u + 2891336453u;
+    let oldState = *state;
+    *state = oldState + 747796405u + 2891336453u;
     let word = ((oldState >> ((oldState >> 28u) + 4u)) ^ oldState) * 277803737u;
-    *state = (word >> 22u) ^ word;
+    return (word >> 22u) ^ word;
 }
 
 fn jenkinsHash(input: u32) -> u32 {
