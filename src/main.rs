@@ -6,6 +6,8 @@ mod app;
 mod renderer;
 mod scene;
 mod fps_counter;
+mod gpu_timer;
+mod budget;
 mod gui_app;
 mod gpu_buffer;
 mod sphere;
@@ -73,7 +75,7 @@ fn setup_scene() -> Scene {
             emit: Texture::new_from_color(glm::vec3(0.0_f32, 50.0_f32, 0.0_f32)),
         },
         Material::Emissive {
-            emit: Texture::new_from_color(glm::vec3(0.0, 0.0, 50.0)),
+            emit: Texture::new_from_color(glm::vec3(0.0, 0.0, 0.5)),
         },
     ];
 
